@@ -1,0 +1,358 @@
+---
+title: 'Coursera Capstone: Yelp Top 20 Users and Their Impact on Businesses'
+author: "Pamela Wood-Pate"
+date: "Monday, November 16, 2015"
+output: html_document
+---
+#Introduction: The Yelp Data Challenge
+Use the Yelp Data to formulate a data science question and produce a project from start to finish that will answer that question utilizing the knowledge and methods taught from the John Hopkins Data Science Coursera Class.
+
+###Purpose:  
+For those Yelp profiles that have a large sphere of influence (i.e. top 20 with the most friends), what is their impact on additional ratings for the establishments they review and can we predict future ratings based on the ratings/sentiment of the influential reviewer?  To determine impact, I will look at amount of tips after the reviews, amount of additional reviews, and the correlation of the given ratings/sentiment (may look into some text analytics here) compared to influential reviewer ratings, and the significance levels associated to those items.  For the prediction, I'd like to see if there is a historical pattern to observe that can be leveraged to help in determining a fairly accurate prediction algorithm for future ratings.
+
+#Methods:  
+###Methodology for Identifying the Top 20 Users:  
+
+Since, there are many profiles that have high volume of friends, but do not have many reviews written in the cities specified in this particular data set, I had to produce a new way to find the "Top 20" profiles. So, I found 50 users that have the highest reviews. Then of those 50 users that have the most reviews, I gathered the 20 users that have the most friends.  
+
+###Methodology for Top 20 Impact on Reviews and Tips:  
+
+For the top 20 users, I pulled all of their respective reviews. Then, I collected all of the reviews for the businesses that were reviewed by a top 20 user. I found the first review made by a top 20 user for each business, which is Day 0. From there, I determined the difference in dates from Day 0 to the other review dates (any before Day 0 are reviews that happend before the first top 20 reviewer date and show as negative, viceversa is true for those reviews that occurred after Day0). I summed the reviews per the differences in dates just described. 
+
+###Methodology for Prediction Modeling:  
+####Step 1: Preprocess the data  
+The First Data Set  
+The first review done by the top 20 user will be the baseline for comparing the later reviews. When getting the first stars for the top 20 users first reviews, I found that there are 10 cases where there were two top 20 users that wrote reviews on the same first day, so two stars show for one day for one business. To adjust for this, I averaged the stars for those.
+
+The Second Data Set  
+Then, I got all of the stars for the reviews that occurred after the first top 20 reviews. Then I changed the stars for those reviews for that data set to a character data type for a random forest prediction model.
+
+####Step 2: Split the data into Training and Test Sets  
+After that, I combined the first data set with the second data set and split that into training and testing sets. I used the top 20 stars and the business_id as predictors for the outcome (the stars on the reviews that occurred after the top 20 reviews) on the training set. Then I ran the prediction on the testing set. 
+
+#Results:  
+###Determining Impact of Top 20 Users on Reviews and Tips:  
+
+16% of the top 20 users write the first reviews for an establishment.  However, it appears that an increase in other reviews for a particular place is what typically prompts the top 20 users to go to an establishment in the first place. From there, the top 20 users have an impact on other yelp users. Prior to a top 20 user review, the mean and median count of reviews are 60 and 23 respectively.  After a top 20 user review, the mean and median count of reviews are 220 and 235 respectively. When performing a T test on the before vs after data sets, we find that the difference in the means in statistically significant, indicating that the top 20 users have an impact on review volumes.  
+
+When narrowing down the time series to 1000 days before and 1000 days after the first top 20 review date, the impact that the top 20 users have on the review volume is even more pravalent.  The mean and median in the 1000 days before are 140 and 109 respectively; while the mean and median in the 1000 days after are 358 and 345 respectively. After performing a t test, we see that this difference in means of 156% is significant.
+
+```{r,echo=FALSE,warning=FALSE,results='hide',message=FALSE}
+library(data.table)
+library(dplyr)
+
+#DataSets
+businessData<-readRDS(file="~/Training/DataScienceClass/Capstone/business.RDS", refhook = NULL)
+##checkinData<-readRDS(file="~/Training/DataScienceClass/Capstone/checkin.RDS", refhook = NULL)
+reviewData<-readRDS(file="~/Training/DataScienceClass/Capstone/review.RDS", refhook = NULL)
+tipData<-readRDS(file="~/Training/DataScienceClass/Capstone/tip.RDS", refhook = NULL)
+userData<-readRDS(file="~/Training/DataScienceClass/Capstone/user.RDS", refhook = NULL)
+
+##Data is only on 10 cities and only 7 ish that are in the US.
+##the review_count in user table = total reviews for profile in all cities around the world
+##the review table has only reviews for the cities provided 
+##to get a correct count and top 20 friends, I need to limit my top 20 users to those that have the most reviews avaiable within the data set given and the most friends
+
+#Getting Real Review_Count
+Rev_Agg<-aggregate(data=reviewData, review_id ~user_id, function(x) length(unique(x)))
+Rev_Agg<-Rev_Agg[order(-Rev_Agg$review_id),]
+Rev_Agg_50<-Rev_Agg[1:50,] #Top 50 Reviewers
+names(Rev_Agg_50)[names(Rev_Agg_50)=="review_id"] <- "ReviewCount" ##Rename column
+
+#Merge Top 50 reviews with the users data
+User_Rev<-merge(Rev_Agg_50,userData, by = "user_id")
+
+##Find number of friends per top 50 reviewer
+userFriends<-sapply(User_Rev$friends, length)
+##Order the top 50 reviewers by most friends
+RowNo<-order(userFriends,decreasing=TRUE)
+Friends<-User_Rev[RowNo,]
+FriendLength<-sapply(Friends$friends, length)
+##Adding Friend Count to the table
+Friends$FriendCount<-FriendLength
+##TOP 20 PROFILES
+Top20<-Friends[1:20,]
+users<-c("user_id","ReviewCount","name","FriendCount")
+users<-Top20[users]
+
+##All reviews from the top 20 users
+top20rev<-merge(users,reviewData, by ="user_id")
+
+##First top 20 review for each business
+first20rev<-aggregate(data=top20rev, date~business_id, function(x) min(x))
+##All reviews for the businesses that had a top 20 user
+allrev<-merge(first20rev,reviewData,by="business_id",all.y=TRUE)
+
+##All reviews before the first top 20 user review
+allrevB4<-allrev[which(allrev$date.y<allrev$date.x),]
+##All reviews after the first top 20 user review
+allrevAfter<-allrev[which(allrev$date.y>allrev$date.x),]
+
+##BEFORE: Aggregated View BY DAY- Review Date (On or After Top 20 Review), Top 20 Review Date, BusinessID, Count of Reviews, Day between Top20 Review Date and Other Date
+DayrevcountB4<-aggregate(review_id~date.y+date.x+business_id,allrevB4,length)
+datediffB4<-as.Date(DayrevcountB4$date.y)-as.Date(DayrevcountB4$date.x)
+DayrevcountB4$datediffB4<-datediffB4
+names(DayrevcountB4)[names(DayrevcountB4)=="datediffB4"] <- "datediff"
+
+before<-aggregate(review_id~datediff,DayrevcountB4,sum)
+mean(before$review_id)
+median(before$review_id)
+sd(before$review_id)
+length(before$review_id)
+
+
+##AFTER: Aggregated View BY DAY- Review Date (On or After Top 20 Review), Top 20 Review Date, BusinessID, Count of Reviews, Day between Top20 Review Date and Other Date
+DayrevcountAfter<-aggregate(review_id~date.y+date.x+business_id,allrevAfter,length)
+datediffAfter<-as.Date(DayrevcountAfter$date.y)-as.Date(DayrevcountAfter$date.x)
+DayrevcountAfter$datediffAfter<-datediffAfter
+names(DayrevcountAfter)[names(DayrevcountAfter)=="datediffAfter"] <- "datediff"
+
+after<-aggregate(review_id~datediff,DayrevcountAfter,sum)
+mean(after$review_id)
+median(after$review_id)
+sd(after$review_id)
+length(after$review_id)
+
+B4After<-rbind(DayrevcountB4,DayrevcountAfter) 
+B4AfterAgg<-aggregate(review_id~datediff,B4After,sum)
+x<-ts(B4AfterAgg$datediff)
+y<-B4AfterAgg$review_id
+
+#How many businesses had reviews prior to a top 20 user?
+BusIDB4<-as.data.frame(unique(DayrevcountB4$business_id)) #Unique BusID before top20 reviewer
+BusIDAfter<-as.data.frame(unique(DayrevcountAfter$business_id)) #unique BusID after top20 reviewer
+names(BusIDB4)<-"B4"
+names(BusIDAfter)<-"After"
+paste(round((length(BusIDAfter$After) - length(BusIDAfter[which(BusIDAfter$After %in% BusIDB4$B4),]))/length(BusIDAfter$After),2)*100,"%",sep="") #% of after top20 reviewers had reviews prior to top20 review
+
+B4After_1000<-B4After[which(B4After$datediff>=-1000 & B4After$datediff<=1000),]
+B4After_1000Agg<-aggregate(review_id~datediff,B4After_1000,sum)
+##B4After<-B4After[order(B4After$date.y),]
+x1000<-ts(B4After_1000Agg$datediff)
+y1000<-B4After_1000Agg$review_id
+
+DayrevcountB4_1000<-DayrevcountB4[which(DayrevcountB4$datediff>=-1000 & DayrevcountB4$datediff<=1000),]
+before1000<-aggregate(review_id~datediff,DayrevcountB4_1000,sum)
+mean(before1000$review_id)
+median(before1000$review_id)
+sd(before1000$review_id)
+length(before1000$review_id)
+
+DayrevcountAfter_1000<-DayrevcountAfter[which(DayrevcountAfter$datediff>=-1000 & DayrevcountAfter$datediff<=1000),]
+after1000<-aggregate(review_id~datediff,DayrevcountAfter_1000,sum)
+mean(after1000$review_id)
+median(after1000$review_id)
+sd(after1000$review_id)
+length(after1000$review_id)
+```
+
+```{r, echo=FALSE,warning=FALSE}
+plot(x,y,main="Impact of Top 20 Reviewers on Review Counts Across Entire Time Series",xlab="Days from First Top 20 Review Date",ylab="Count of Reviews")
+t.test(before$review_id,after$review_id)
+
+plot(x1000,y1000,main="Impact of Top 20 Reviewers on Review Counts Across 2000 Days",xlab="Days from First Top 20 Review Date",ylab="Count of Reviews")
+t.test(before1000$review_id,after1000$review_id)
+
+rm(DayrevcountB4_1000)
+rm(DayrevcountB4)
+rm(DayrevcountAfter)
+rm(DayrevcountAfter_1000)
+rm(Rev_Agg)
+rm(Rev_Agg_50)
+rm(User_Rev)
+rm(userFriends)
+rm(RowNo)
+rm(Friends)
+rm(FriendLength)
+rm(Top20)
+rm(allrev)
+rm(allrevB4)
+rm(datediffB4)
+rm(B4After)
+rm(B4After_1000)
+rm(B4After_1000Agg)
+rm(BusIDB4)
+rm(BusIDAfter)
+rm(datediffAfter)
+rm(B4AfterAgg)
+rm(x)
+rm(y)
+rm(x1000)
+rm(y1000)
+rm(before)
+rm(after)
+rm(after1000)
+rm(before1000)
+```
+
+The tips data follows a similar pattern as the reviews.  Prior to a top 20 user tip, the mean and median are 26 and 18 respectively. After a top 20 user tip, the mean and median are 39 and 34 respectively. The T test shows that the differences in the means are statistically significant, indicating that the top 20 users have an impact on tip volumes.
+
+Again, narrowing down the time series to 1000 days before and 1000 days after the first top 20 tip date, we see that the impact is still pravalent. The mean and median for the tips before are 35 and 31 respectively, while the mean and median for the tips after are 58 and 59 respectively. The t test suggests that the difference of 66% between the means is significant.
+
+
+```{r,echo=FALSE, warning=FALSE,results='hide'}
+top20tips<-merge(users,tipData,by="user_id")
+first20tips<-aggregate(data=top20tips, date~business_id, function(x) min(x))
+alltip<-merge(first20tips,tipData,by="business_id")
+alltipB4<-alltip[which(alltip$date.y<alltip$date.x),]
+alltipAfter<-alltip[which(alltip$date.y>alltip$date.x),]
+
+DaytipcountB4<-aggregate(user_id~date.y+date.x+business_id,alltipB4,length)
+datediffB4tip<-as.Date(DaytipcountB4$date.y)-as.Date(DaytipcountB4$date.x)
+DaytipcountB4$datediffB4<-datediffB4tip
+names(DaytipcountB4)[names(DaytipcountB4)=="datediffB4"] <- "datediff"
+
+beforetip<-aggregate(user_id~datediff,DaytipcountB4,sum)
+mean(beforetip$user_id)
+median(beforetip$user_id)
+sd(beforetip$user_id)
+length(beforetip$user_id)
+
+DaytipcountAfter<-aggregate(user_id~date.y+date.x+business_id,alltipAfter,length)
+datediffAftertip<-as.Date(DaytipcountAfter$date.y)-as.Date(DaytipcountAfter$date.x)
+DaytipcountAfter$datediffAfter<-datediffAftertip
+names(DaytipcountAfter)[names(DaytipcountAfter)=="datediffAfter"] <- "datediff"
+
+aftertip<-aggregate(user_id~datediff,DaytipcountAfter,sum)
+mean(aftertip$user_id)
+median(aftertip$user_id)
+sd(aftertip$user_id)
+length(aftertip$user_id)
+
+B4Aftertip<-rbind(DaytipcountB4,DaytipcountAfter) 
+B4AftertipAgg<-aggregate(user_id~datediff,B4Aftertip,sum)
+xtip<-ts(B4AftertipAgg$datediff)
+ytip<-B4AftertipAgg$user_id
+
+B4Aftertip_1000<-B4Aftertip[which(B4Aftertip$datediff>=-1000 & B4Aftertip$datediff<=1000),]
+B4Aftertip_1000Agg<-aggregate(user_id~datediff,B4Aftertip_1000,sum)
+x1000tip<-ts(B4Aftertip_1000Agg$datediff)
+y1000tip<-B4Aftertip_1000Agg$user_id
+
+DaytipcountB4_1000<-DaytipcountB4[which(DaytipcountB4$datediff>=-1000 & DaytipcountB4$datediff<=1000),]
+before1000tip<-aggregate(user_id~datediff,DaytipcountB4_1000,sum)
+mean(before1000tip$user_id)
+median(before1000tip$user_id)
+sd(before1000tip$user_id)
+length(before1000tip$user_id)
+
+DaytipcountAfter_1000<-DaytipcountAfter[which(DaytipcountAfter$datediff>=-1000 & DaytipcountAfter$datediff<=1000),]
+after1000tip<-aggregate(user_id~datediff,DaytipcountAfter_1000,sum)
+mean(after1000tip$user_id)
+median(after1000tip$user_id)
+sd(after1000tip$user_id)
+length(after1000tip$user_id)
+```
+
+```{r,echo=FALSE,warning=FALSE}
+plot(xtip,ytip,main="Impact of Top 20 Reviewers on Tip Counts for Entire Time Series",xlab="Days from First Top 20 Tip Date",ylab="Count of Tips")
+t.test(beforetip$user_id,aftertip$user_id)
+
+plot(x1000tip,y1000tip,main="Impact of Top 20 Reviewers on Tip Counts Across 2000 Days",xlab="Days from First Top 20 Tip Date",ylab="Count of Tips")
+t.test(before1000tip$user_id,after1000tip$user_id)
+
+rm(B4Aftertip)
+rm(B4AftertipAgg)
+rm(B4Aftertip_1000)
+rm(B4Aftertip_1000Agg)
+rm(DaytipcountB4)
+rm(DaytipcountB4_1000)
+rm(DaytipcountAfter)
+rm(DaytipcountAfter_1000)
+rm(after1000tip)
+rm(aftertip)
+rm(alltip)
+rm(alltipAfter)
+rm(alltipB4)
+rm(before1000tip)
+rm(beforetip)
+rm(first20tips)
+rm(tipData)
+rm(userData)
+rm(datediffAftertip)
+rm(datediffB4tip)
+rm(xtip)
+rm(ytip)
+rm(x1000tip)
+rm(y1000tip)
+rm(top20tips)
+```
+
+Now that it has been discovered that the top 20 users have an impact on the count of reviews and tips, do other users produce the same, or similar ratings as the top 20 user?  If so, can we predict future ratings based on that?
+
+It turns out that the first top 20 reviews were not a great predictor for the subsequent ratings showing a 41% accuracy. I think had the text analytics worked out, that the combination could have increased the accuracy a bit. The sensitivity shows the highest proportion of true positives for 3 stars. The specificity shows a high proportion of true negatives for 1,2, and 3 stars. So with a low rate for true positives, a high rate for true negatives and a low accuracy, this is not a good model.
+
+```{r,echo=FALSE, warning=FALSE,results='hide',message=FALSE}
+##Preprocess for Prediction
+###First Top 20 Ratings
+firstrev<-merge(first20rev, reviewData, by = c("business_id","date"))
+firstrev<-merge(firstrev,users, by="user_id")
+##There are some businesses that have more than one top 20 write reviews on the same date (going to average those stars)
+firstrevdups<-as.data.frame(ifelse(duplicated(firstrev$business_id),firstrev$business_id,0))
+firstrevdups<-firstrevdups[which(firstrevdups!=0),]
+firstrevunique<-ifelse((firstrev$business_id %in% firstrevdups),NA,firstrev$business_id)
+firstrevunique<-firstrevunique[!is.na(firstrevunique)]
+
+firstrev1<-firstrev[which(firstrev$business_id %in% firstrevunique),]
+firstrev1<-firstrev1[c(2,6)]
+
+firstrev2<-firstrev[which(firstrev$business_id %in% firstrevdups),]
+firstrev2<-aggregate(stars~business_id,firstrev2,mean)
+
+firststars<-rbind(firstrev1,firstrev2)
+nextstars<-allrevAfter[c(1,6)]
+
+m1<-merge(firststars,nextstars,by="business_id")
+names(m1)[names(m1)=="stars.x"] <- "Top20Stars"
+names(m1)[names(m1)=="stars.y"] <- "NextStars"
+m1$Top20Stars<-as.integer(round(m1$Top20Stars,1))
+m1$NextStars<-ifelse(m1$NextStars==1,"A",
+                     ifelse(m1$NextStars==2,"B",
+                            ifelse(m1$NextStars==3,"C",
+                                   ifelse(m1$NextStars==4,"D",
+                                          "E"))))
+m1 <- transform(m1,id=as.numeric(factor(m1$business_id)))
+
+rm(firststars)
+rm(nextstars)
+rm(reviewData)
+rm(allrevAfter)
+rm(businessData)
+rm(first20rev)
+rm(users)
+rm(firstrev)
+rm(firstrev1)
+rm(firstrev2)
+rm(firstrevdups)
+rm(firstrevunique)
+rm(userData)
+rm(top20rev)
+
+require(caret)
+set.seed(1306)
+inTrain<-createDataPartition(y=m1$NextStars,p=.6,list=FALSE)
+training<-m1[inTrain,]
+testing<-m1[-inTrain,]
+
+rm(inTrain)
+rm(m1)
+
+fit<-train(as.factor(NextStars)~Top20Stars+id,method="rf",data=training,ntree=10, tuneGrid = data.frame(.mtry = 3))
+fit$finalModel
+
+pred<-predict(fit,newdata=testing)
+```
+```{r,echo=FALSE,warning=FALSE}
+confusionMatrix(pred,testing$NextStars)
+```
+
+
+#Discussion:  
+The top 20 User Profiles have a statistically significant impact on review counts and tip counts. The difference in the means between the count of reviews that occurred before the first top 20 review (140) and after (358) is 156%. The difference in the means between the count of tips that occured before the top 20 tip (35) and after (58) is 66%.  After setting up the following hypothesis test:   
+H0: The mean of the Before data set = the mean of the After data  
+H1: The mean of the Before data set != the mean of the After data    
+and performing a t test, it was determined that the null hypothesis is rejected because the p values (for reviews and tips) were less than the threshold of .05; therefore, the means do not equal each other, indicating that difference in the means is statistically significant for both the reviews and the tips.
+
+In terms of the prediction, I tried to do some text mining, but my computer did not have enough RAM to handle the text analytics, so I produced a basic prediction model based on the top 20 users' ratings and the businesses they reviewed.
+
+It turns out that the first top 20 reviews were not a great predictor for the subsequent ratings showing a 41% accuracy. I think had the text analytics worked out, that the combination could have increased the accuracy a bit.
